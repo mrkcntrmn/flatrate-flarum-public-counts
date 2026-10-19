@@ -1,0 +1,49 @@
+{
+  "name": "flatrate/flarum-public-counts",
+  "description": "Read-only guest-visible discussion and reply counts for one closed UTC week. Flarum 1.8.",
+  "type": "flarum-extension",
+  "license": "proprietary",
+  "require": {
+    "flarum/core": "^1.8.19",
+    "flarum/approval": "^1.8",
+    "flarum/flags": "^1.8",
+    "flarum/tags": "^1.8"
+  },
+  "require-dev": {
+    "flarum/testing": "^1.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "Flatrate\\PublicCounts\\": "src/"
+    }
+  },
+  "config": {
+    "policy": {
+      "advisories": {
+        "block": false
+      }
+    }
+  },
+  "extra": {
+    "flarum-extension": {
+      "title": "FlatRate Public Counts",
+      "category": "feature",
+      "icon": {
+        "name": "fas fa-chart-bar",
+        "backgroundColor": "#0b3a4a",
+        "color": "#fff"
+      }
+    },
+    "flarum-cli": {
+      "modules": {
+        "admin": false,
+        "forum": false,
+        "js": false,
+        "jsCommon": false,
+        "css": false,
+        "locale": false,
+        "gitConf": false
+      }
+    }
+  }
+}
