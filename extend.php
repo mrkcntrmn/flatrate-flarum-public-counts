@@ -6,4 +6,6 @@ use Flatrate\PublicCounts\PublicCountsController;
 return [
     (new Extend\Routes('api'))
         ->post('/flatrate/public-counts', 'flatrate.public-counts', PublicCountsController::class),
+    (new Extend\Csrf())
+        ->exemptRoute('flatrate.public-counts'),
 ];

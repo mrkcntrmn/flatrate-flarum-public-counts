@@ -10,6 +10,8 @@ use Throwable;
 
 final class PublicCountsController implements RequestHandlerInterface
 {
+    public const MAX_REQUEST_BYTES = 1024;
+
     public function __construct(private PublicVisibleWeekCounts $counts)
     {
     }
@@ -19,24 +21,38 @@ final class PublicCountsController implements RequestHandlerInterface
         $token = (string) getenv('FLATRATE_PUBLIC_COUNTS_TOKEN');
         $header = $request->getHeaderLine('Authorization');
         if ($token === '' || ! hash_equals('Bearer '.$token, $header)) {
-            return new JsonResponse(['error' => 'SOURCE_UNAUTHORIZED'], 401);
+            return $this->json(['error' => 'SOURCE_UNAUTHORIZED'], 401);
         }
-        if ($request->getQueryParams() !== []) {
-            return new JsonResponse(['error' => 'SOURCE_RESPONSE_INVALID'], 400);
-        }
-        $body = $request->getParsedBody();
-        if (! is_array($body) || array_diff(array_keys($body), ['startUtc', 'endUtc']) !== []) {
-            return new JsonResponse(['error' => 'SOURCE_RESPONSE_INVALID'], 400);
+        if (strtoupper($request->getMethod()) !== 'POST') {
+            return $this->json(['error' => 'SOURCE_RESPONSE_INVALID'], 405);
         }
         try {
-            $result = $this->counts->count((string) ($body['startUtc'] ?? ''), (string) ($body['endUtc'] ?? ''));
+            if ($request->getQueryParams() !== []) {
+                return $this->json(['error' => 'SOURCE_RESPONSE_INVALID'], 400);
+            }
+            if (! str_contains(strtolower($request->getHeaderLine('Content-Type')), 'application/json')) {
+                return $this->json(['error' => 'SOURCE_RESPONSE_INVALID'], 415);
+            }
+            if ($this->bodyTooLarge($request)) {
+                return $this->json(['error' => 'SOURCE_RESPONSE_INVALID'], 400);
+            }
+            $body = $request->getParsedBody();
+            $keys = is_array($body) ? array_keys($body) : [];
+            sort($keys);
+            if (! is_array($body) || array_is_list($body) || $keys !== ['endUtc', 'startUtc']) {
+                return $this->json(['error' => 'SOURCE_RESPONSE_INVALID'], 400);
+            }
+            if (! is_string($body['startUtc']) || ! is_string($body['endUtc'])) {
+                return $this->json(['error' => 'SOURCE_RESPONSE_INVALID'], 400);
+            }
+            $result = $this->counts->count($body['startUtc'], $body['endUtc']);
         } catch (CountRejected $error) {
-            return new JsonResponse(['error' => $error->getMessage()], 422);
+            return $this->json(['error' => $error->getMessage()], 422);
         } catch (Throwable $error) {
-            return new JsonResponse(['error' => 'SOURCE_UNAVAILABLE'], 503);
+            return $this->json(['error' => 'SOURCE_UNAVAILABLE'], 503);
         }
 
-        return new JsonResponse([
+        return $this->json([
             'discussions' => $result['discussions'],
             'replies' => $result['replies'],
             'snapshot' => [
@@ -52,6 +68,38 @@ final class PublicCountsController implements RequestHandlerInterface
                 'ledger_is_forum_history' => false,
                 'observation' => 'current_guest_visible_by_creation_time',
             ],
-        ]);
+        ], 200);
+    }
+
+    private function bodyTooLarge(ServerRequestInterface $request): bool
+    {
+        $declared = $request->getHeaderLine('Content-Length');
+        if ($declared !== '' && (! ctype_digit($declared) || (int) $declared > self::MAX_REQUEST_BYTES)) {
+            return true;
+        }
+        $stream = $request->getBody();
+        try {
+            if ($stream->isSeekable() && $stream->isReadable()) {
+                $size = $stream->getSize();
+                if ($size !== null) {
+                    return $size > self::MAX_REQUEST_BYTES;
+                }
+                $stream->rewind();
+                $sample = $stream->read(self::MAX_REQUEST_BYTES + 1);
+                $stream->rewind();
+
+                return strlen($sample) > self::MAX_REQUEST_BYTES;
+            }
+        } catch (Throwable $error) {
+            return true;
+        }
+        $encoded = json_encode($request->getParsedBody());
+
+        return strlen((string) $encoded) > self::MAX_REQUEST_BYTES;
+    }
+
+    private function json(array $payload, int $status): ResponseInterface
+    {
+        return new JsonResponse($payload, $status, ['Cache-Control' => 'no-store']);
     }
 }
