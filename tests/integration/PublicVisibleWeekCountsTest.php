@@ -133,6 +133,69 @@ class PublicVisibleWeekCountsTest extends TestCase
         $this->assertSame(1, $this->counts()['discussions']);
     }
 
+    public function test_read_committed_caller_is_rejected(): void
+    {
+        $db = $this->database();
+        $db->rollBack();
+        $db->statement('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+        $db->beginTransaction();
+        try {
+            (new PublicVisibleWeekCounts($db))->count('2026-01-12T00:00:00.000Z', '2026-01-19T00:00:00.000Z');
+            $this->fail('A read-committed caller must not receive a verified count.');
+        } catch (\RuntimeException $error) {
+            $this->assertSame('inconsistent_snapshot', $error->getMessage());
+        } finally {
+            $db->rollBack();
+            $db->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            $db->beginTransaction();
+        }
+    }
+
+    public function test_concurrent_hide_does_not_split_the_count_pair(): void
+    {
+        $db = $this->database();
+        $db->rollBack();
+        $db->beginTransaction();
+        $db->table('group_permission')->updateOrInsert(
+            ['group_id' => 2, 'permission' => 'viewForum'],
+            ['group_id' => 2, 'permission' => 'viewForum']
+        );
+        $db->table('tags')->updateOrInsert(['id' => 1], $this->tag(1, 'Public', null, 0));
+        $db->table('discussions')->insert($this->discussion(50, '2026-01-13 00:00:00', ['comment_count' => 2]));
+        $db->table('posts')->insert($this->post(500, 50, 1, 'comment', '2026-01-13 00:00:00'));
+        $db->table('posts')->insert($this->post(501, 50, 2, 'comment', '2026-01-13 01:00:00'));
+        $db->table('discussion_tag')->insert(['discussion_id' => 50, 'tag_id' => 1]);
+        $db->commit();
+
+        $config = $db->getConfig();
+        $reader = new PublicVisibleWeekCounts($db);
+        $reader->betweenCounts = function () use ($config) {
+            $pdo = new \PDO(
+                'mysql:host='.$config['host'].';port='.($config['port'] ?? 3306).';dbname='.$config['database'],
+                $config['username'],
+                $config['password']
+            );
+            $pdo->exec("UPDATE discussions SET hidden_at = '2026-01-18 00:00:00' WHERE id = 50");
+        };
+        try {
+            $db->beginTransaction();
+            $result = $reader->count('2026-01-12T00:00:00.000Z', '2026-01-19T00:00:00.000Z');
+            $this->assertSame($result['discussions'] > 0, $result['replies'] > 0);
+            $this->assertSame(1, $result['discussions']);
+            $this->assertSame(1, $result['replies']);
+        } finally {
+            $db->rollBack();
+            $db->statement('SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED');
+            $db->beginTransaction();
+            $db->table('posts')->where('discussion_id', 50)->delete();
+            $db->table('discussion_tag')->where('discussion_id', 50)->delete();
+            $db->table('discussions')->where('id', 50)->delete();
+            $db->commit();
+            $db->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            $db->beginTransaction();
+        }
+    }
+
     public function test_empty_public_week_is_a_qualified_zero(): void
     {
         $this->prepareDatabase([
@@ -147,6 +210,33 @@ class PublicVisibleWeekCountsTest extends TestCase
         $this->assertSame(0, $result['replies']);
         $this->assertFalse($result['snapshot']['truncated']);
         $this->assertGreaterThanOrEqual($result['snapshot']['window_end_utc'], $result['snapshot']['watermark_utc']);
+    }
+
+    public function test_explain_guest_count_queries(): void
+    {
+        $this->prepareDatabase([
+            'discussions' => [$this->discussion(60, '2026-01-13 00:00:00')],
+            'posts' => [$this->post(600, 60, 2, 'comment', '2026-01-13 01:00:00')],
+            'discussion_tag' => [['discussion_id' => 60, 'tag_id' => 1]],
+        ]);
+        $this->database();
+        $guest = new \Flarum\User\Guest();
+        $discussions = \Flarum\Discussion\Discussion::query()->whereVisibleTo($guest)
+            ->where('discussions.created_at', '>=', '2026-01-12 00:00:00')
+            ->where('discussions.created_at', '<', '2026-01-19 00:00:00');
+        $replies = \Flarum\Post\Post::query()->whereVisibleTo($guest)
+            ->where('posts.type', 'comment')
+            ->where('posts.number', '>', 1)
+            ->where('posts.created_at', '>=', '2026-01-12 00:00:00')
+            ->where('posts.created_at', '<', '2026-01-19 00:00:00');
+        $discussionPlan = $this->database()->select('EXPLAIN '.$discussions->toSql(), $discussions->getBindings());
+        $replyPlan = $this->database()->select('EXPLAIN '.$replies->toSql(), $replies->getBindings());
+        file_put_contents('/tmp/flarum-r5-explain.json', json_encode([
+            'discussions' => $discussionPlan,
+            'replies' => $replyPlan,
+        ], JSON_PRETTY_PRINT));
+        $this->assertNotEmpty($discussionPlan);
+        $this->assertNotEmpty($replyPlan);
     }
 
     private function counts(): array
