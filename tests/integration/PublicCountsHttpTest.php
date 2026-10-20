@@ -157,6 +157,64 @@ class PublicCountsHttpTest extends TestCase
         $this->assertStringContainsString('SOURCE_UNAVAILABLE', $raw);
     }
 
+
+    public function test_protected_file_token_authorizes_without_env(): void
+    {
+        putenv('FLATRATE_PUBLIC_COUNTS_TOKEN');
+        $dir = sys_get_temp_dir().'/fr-public-counts-http-'.bin2hex(random_bytes(4));
+        mkdir($dir, 0700);
+        $path = $dir.'/count-bearer-token';
+        file_put_contents($path, self::TOKEN."\n");
+        chmod($path, 0600);
+        putenv('FLATRATE_PUBLIC_COUNTS_TOKEN_FILE='.$path);
+        try {
+            $this->database()->flushQueryLog();
+            $this->database()->enableQueryLog();
+            $response = $this->send($this->authorized([
+                'startUtc' => self::START,
+                'endUtc' => self::END,
+            ]));
+            // Without fixtures this may 200 with zeros or still authorize past 401.
+            $this->assertNotSame(401, $response->getStatusCode());
+            $this->assertStringNotContainsString(self::TOKEN, (string) $response->getBody());
+        } finally {
+            putenv('FLATRATE_PUBLIC_COUNTS_TOKEN_FILE');
+            @unlink($path);
+            @rmdir($dir);
+            putenv('FLATRATE_PUBLIC_COUNTS_TOKEN='.self::TOKEN);
+        }
+    }
+
+    public function test_symlink_file_token_is_unauthorized(): void
+    {
+        putenv('FLATRATE_PUBLIC_COUNTS_TOKEN');
+        $dir = sys_get_temp_dir().'/fr-public-counts-http-link-'.bin2hex(random_bytes(4));
+        mkdir($dir, 0700);
+        $real = $dir.'/real';
+        $link = $dir.'/count-bearer-token';
+        file_put_contents($real, self::TOKEN."\n");
+        chmod($real, 0600);
+        symlink($real, $link);
+        putenv('FLATRATE_PUBLIC_COUNTS_TOKEN_FILE='.$link);
+        try {
+            $this->database()->flushQueryLog();
+            $this->database()->enableQueryLog();
+            $response = $this->send($this->authorized([
+                'startUtc' => self::START,
+                'endUtc' => self::END,
+            ]));
+            $this->assertSame(401, $response->getStatusCode());
+            $this->assertNoCountQueries();
+            $this->assertStringNotContainsString(self::TOKEN, (string) $response->getBody());
+        } finally {
+            putenv('FLATRATE_PUBLIC_COUNTS_TOKEN_FILE');
+            @unlink($link);
+            @unlink($real);
+            @rmdir($dir);
+            putenv('FLATRATE_PUBLIC_COUNTS_TOKEN='.self::TOKEN);
+        }
+    }
+
     private function authorized(array $json)
     {
         return $this->request('POST', '/api/flatrate/public-counts', ['json' => $json])
