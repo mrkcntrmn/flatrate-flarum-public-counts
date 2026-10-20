@@ -18,9 +18,9 @@ final class PublicCountsController implements RequestHandlerInterface
 
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
-        $token = (string) getenv('FLATRATE_PUBLIC_COUNTS_TOKEN');
+        $token = (new CountBearerTokenResolver())->resolve();
         $header = $request->getHeaderLine('Authorization');
-        if ($token === '' || ! hash_equals('Bearer '.$token, $header)) {
+        if ($token === null || $token === '' || ! hash_equals('Bearer '.$token, $header)) {
             return $this->json(['error' => 'SOURCE_UNAUTHORIZED'], 401);
         }
         if (strtoupper($request->getMethod()) !== 'POST') {

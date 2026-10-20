@@ -9,3 +9,15 @@ The result is what a guest can see at the time of the read, grouped by creation 
 `POST /api/flatrate/public-counts` accepts only `startUtc` and `endUtc`, exactly seven days apart, and requires `FLATRATE_PUBLIC_COUNTS_TOKEN`. The response is the two integers and a snapshot receipt.
 
 Disposable coverage is `tests/integration/PublicVisibleWeekCountsTest.php` against Flarum core, tags, flags, and approval. `fof/byobu` is not part of the installed disposable package set. Private discussions are Flarum's `is_private` flag. Approval hides unapproved rows by marking them private.
+
+## Bearer token (PikaPods)
+
+`POST /api/flatrate/public-counts` requires a server-side bearer.
+
+Resolution order:
+
+1. `FLATRATE_PUBLIC_COUNTS_TOKEN` environment variable (when the host provides custom env)
+2. `FLATRATE_PUBLIC_COUNTS_TOKEN_FILE` pointing at a regular secret file
+3. Canonical file `/data/flatrate-public-counts/secrets/count-bearer-token`
+
+Provision the canonical file via SFTP as a regular file (not a symlink), mode `0600`, directory `0700`, single-line token, no whitespace. Missing or invalid material fails closed with HTTP 401 and does not query the database.
